@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Controle Financeiro do Casal</title>
+    <link rel="stylesheet" href="styles.css?v=4">
+    <link rel="manifest" href="manifest.webmanifest">
+</head>
+<body>
+<div class="container">
+    <header>
+        <h1>Controle Financeiro do Casal</h1>
+        <div class="header-actions">
+            <button type="button" id="tema" class="icon-btn" aria-label="Alternar tema">Tema</button>
+            <div class="month-selector">
+                <label for="mesAnalise">Mês:</label>
+                <select id="mesAnalise"></select>
+            </div>
+        </div>
+    </header>
+
+    <div class="toolbar">
+        <button type="button" id="exportarJson" class="btn-tool">Backup JSON</button>
+        <label class="btn-tool" for="importarJson">Restaurar backup</label>
+        <input type="file" id="importarJson" accept=".json,application/json" hidden>
+        <button type="button" id="exportarCsv" class="btn-tool">Exportar CSV</button>
+        <label class="btn-tool" for="importarCsv">Importar CSV/OFX</label>
+        <input type="file" id="importarCsv" accept=".csv,.ofx,.txt,text/csv" hidden>
+        <button type="button" id="relatorio" class="btn-tool">Relatório anual</button>
+        <button type="button" id="imprimir" class="btn-tool">Imprimir</button>
+        <button type="button" id="desfazer" class="btn-tool">Desfazer</button>
+        <button type="button" id="limparMes" class="btn-tool danger">Limpar mês</button>
+        <button type="button" id="limparLancamentos" class="btn-tool danger">Limpar tudo</button>
+    </div>
+
+    <div class="kpi-grid">
+        <div class="kpi-card"><h3>Saldo do mês</h3><div class="value" id="kpiSaldo">R$ 0,00</div></div>
+        <div class="kpi-card success"><h3>Receitas</h3><div class="value" id="kpiReceitas">R$ 0,00</div></div>
+        <div class="kpi-card danger"><h3>Despesas</h3><div class="value" id="kpiDespesas">R$ 0,00</div></div>
+        <div class="kpi-card warning"><h3>Orçamento usado</h3><div class="value" id="kpiOrcamento">0%</div></div>
+    </div>
+
+    <div class="main-grid">
+        <section class="card">
+            <div class="card-header">
+                <h2>Lançamentos</h2>
+                <span id="quantidadeLancamentos" class="muted"></span>
+            </div>
+            <div class="filters">
+                <input id="filtroBusca" type="search" placeholder="Buscar descrição">
+                <select id="filtroTipo"><option value="">Todos os tipos</option><option>Receita</option><option>Despesa</option></select>
+                <select id="filtroCategoria"><option value="">Todas as categorias</option></select>
+                <select id="filtroQuem"><option value="">Todas as pessoas</option><option>Pessoa 1</option><option>Pessoa 2</option></select>
+            </div>
+            <div class="table-wrapper" tabindex="0">
+                <table>
+                    <thead><tr>
+                        <th><button class="sort" data-sort="data">Data</button></th>
+                        <th>Descrição</th>
+                        <th>Tipo</th>
+                        <th>Categoria</th>
+                        <th>Quem</th>
+                        <th><button class="sort" data-sort="valorCentavos">Valor</button></th>
+                        <th>Ações</th>
+                    </tr></thead>
+                    <tbody id="tabelaLancamentos"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="card">
+            <h2 id="tituloFormulario">Novo Lançamento</h2>
+            <form id="formLancamento">
+                <input type="hidden" id="lancId">
+                <div class="form-group"><label for="lancData">Data</label><input type="date" id="lancData" required></div>
+                <div class="form-group"><label for="lancDesc">Descrição</label><input type="text" id="lancDesc" maxlength="80" required></div>
+                <div class="form-group"><label for="lancTipo">Tipo</label><select id="lancTipo"><option>Despesa</option><option>Receita</option></select></div>
+                <div class="form-group"><label for="lancCategoria">Categoria</label><select id="lancCategoria"></select></div>
+                <div class="form-group"><label for="lancQuem">Quem</label><select id="lancQuem"><option>Pessoa 1</option><option>Pessoa 2</option></select></div>
+                <div class="form-group"><label for="lancValor">Valor (R$)</label><input type="number" id="lancValor" min="0.01" step="0.01" required></div>
+                <div class="form-grid">
+                    <div class="form-group"><label for="lancSituacao">Situação</label><select id="lancSituacao"><option>Concluído</option><option>Pendente</option></select></div>
+                    <div class="form-group"><label for="lancNatureza">Natureza</label><select id="lancNatureza"><option>Variável</option><option>Fixo</option></select></div>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group"><label for="lancParcelas">Parcelas</label><input type="number" id="lancParcelas" min="1" max="120" value="1"></div>
+                    <div class="form-group"><label for="lancRecorrencia">Recorrência</label><select id="lancRecorrencia"><option value="">Nenhuma</option><option>Mensal</option></select></div>
+                </div>
+                <div class="form-group"><label for="lancObservacao">Observações</label><textarea id="lancObservacao" rows="3"></textarea></div>
+                <button type="submit" id="botaoSalvar" class="btn">Adicionar Lançamento</button>
+                <button type="button" id="cancelarEdicao" class="btn btn-secondary hidden">Cancelar edição</button>
+                <div id="mensagem" class="mensagem" role="status" aria-live="polite"></div>
+            </form>
+        </section>
+    </div>
+
+    <div class="charts-grid">
+        <section class="card"><h2>Despesas por categoria</h2><canvas id="graficoCategorias" aria-label="Gráfico de despesas por categoria"></canvas></section>
+        <section class="card"><h2>Evolução do saldo</h2><canvas id="graficoEvolucao" aria-label="Gráfico de evolução do saldo"></canvas></section>
+    </div>
+
+    <div class="planning-grid">
+        <section class="card">
+            <h2>Resumo anual</h2>
+            <div id="resumoAnual" class="summary-grid"></div>
+        </section>
+        <section class="card">
+            <div class="card-header"><h2>Calendário do mês</h2></div>
+            <div id="calendario" class="calendar"></div>
+        </section>
+    </div>
+
+    <section class="card">
+        <div class="card-header"><h2>Metas financeiras</h2><button type="button" id="adicionarMeta" class="btn-tool">Adicionar meta</button></div>
+        <div id="listaMetasFinanceiras" class="summary-grid"></div>
+    </section>
+
+    <section class="card">
+        <div class="card-header"><h2>Orçamento por categoria</h2><button type="button" id="gerenciarCategorias" class="btn-tool">Gerenciar</button></div>
+        <div id="listaMetas"></div>
+        <div id="resumoCategorias" class="summary-grid"></div>
+    </section>
+</div>
+
+<dialog id="dialogCategorias">
+    <form method="dialog" id="formCategorias">
+        <h2>Categorias e metas</h2>
+        <p class="muted">Uma categoria por linha no formato <strong>Nome;1500</strong>, usando ponto como separador decimal.</p>
+        <textarea id="categoriasTexto" rows="10"></textarea>
+        <div class="dialog-actions">
+            <button type="button" value="cancelar" class="btn btn-secondary" onclick="document.getElementById('dialogCategorias').close()">Cancelar</button>
+            <button value="salvar" id="salvarCategorias" class="btn">Salvar</button>
+        </div>
+    </form>
+</dialog>
+
+<dialog id="dialogMeta">
+    <form method="dialog" id="formMeta">
+        <h2>Nova meta financeira</h2>
+        <div class="form-group"><label for="metaNome">Nome</label><input id="metaNome" required></div>
+        <div class="form-group"><label for="metaValor">Valor alvo</label><input id="metaValor" type="number" min="0.01" step="0.01" required></div>
+        <div class="form-group"><label for="metaPrazo">Prazo</label><input id="metaPrazo" type="month" required></div>
+        <div class="dialog-actions">
+            <button type="button" class="btn btn-secondary" onclick="document.getElementById('dialogMeta').close()">Cancelar</button>
+            <button type="submit" class="btn">Salvar meta</button>
+        </div>
+    </form>
+</dialog>
+
+<script src="app.js?v=5"></script>
+</body>
+</html>
