@@ -41,7 +41,14 @@ function carregar() {
 }
 
 function salvar() {
-    localStorage.setItem(STORAGE, JSON.stringify({ lancamentos, categorias, metasFinanceiras }));
+    try {
+        localStorage.setItem(STORAGE, JSON.stringify({ lancamentos, categorias, metasFinanceiras }));
+        return true;
+    } catch (erro) {
+        console.error('Não foi possível salvar os dados locais.', erro);
+        mensagem('Não foi possível salvar os dados. Verifique o armazenamento do navegador.', true);
+        return false;
+    }
 }
 
 function inicializar() {
@@ -219,6 +226,11 @@ function editarLancamento(id) {
     el.categoria.value = item.categoria;
     $('lancQuem').value = item.quem;
     $('lancValor').value = (item.valorCentavos / 100).toFixed(2);
+    $('lancSituacao').value = item.situacao || 'Concluído';
+    $('lancNatureza').value = item.natureza || 'Variável';
+    $('lancParcelas').value = item.parcelas || 1;
+    $('lancRecorrencia').value = item.recorrencia || '';
+    $('lancObservacao').value = item.observacao || '';
     $('tituloFormulario').textContent = 'Editar Lançamento';
     $('botaoSalvar').textContent = 'Salvar alterações';
     $('cancelarEdicao').classList.remove('hidden');
@@ -267,7 +279,14 @@ function renderizarMetas(itens) {
         const percentual = meta ? Math.round(gasto / meta * 100) : 0;
         const item = document.createElement('div');
         item.className = 'category-progress';
-        item.innerHTML = `<div class="category-info"><span>${categoria} (Meta: ${formatar(meta)})</span><span>Gasto: ${formatar(gasto)} (${percentual}%)</span></div>`;
+        const informacoes = document.createElement('div');
+        informacoes.className = 'category-info';
+        const rotuloCategoria = document.createElement('span');
+        rotuloCategoria.textContent = `${categoria} (Meta: ${formatar(meta)})`;
+        const rotuloGasto = document.createElement('span');
+        rotuloGasto.textContent = `Gasto: ${formatar(gasto)} (${percentual}%)`;
+        informacoes.append(rotuloCategoria, rotuloGasto);
+        item.append(informacoes);
         const barra = document.createElement('div');
         barra.className = 'progress-bar';
         barra.setAttribute('role', 'progressbar');
@@ -283,7 +302,9 @@ function renderizarMetas(itens) {
 
         const resumo = document.createElement('div');
         resumo.className = 'summary-item';
-        resumo.innerHTML = `<strong>${categoria}</strong>${formatar(gasto)} de ${formatar(meta)}`;
+        const titulo = document.createElement('strong');
+        titulo.textContent = categoria;
+        resumo.append(titulo, document.createTextNode(`${formatar(gasto)} de ${formatar(meta)}`));
         el.resumo.append(resumo);
     });
 }
@@ -379,7 +400,7 @@ function salvarCategorias(evento) {
 }
 
 function exportarJson() {
-    baixar(JSON.stringify({ lancamentos, categorias }, null, 2), 'controle-financeiro.json', 'application/json');
+    baixar(JSON.stringify({ lancamentos, categorias, metasFinanceiras }, null, 2), 'controle-financeiro.json', 'application/json');
 }
 
 function importarJson(evento) {
@@ -391,8 +412,10 @@ function importarJson(evento) {
             const dados = JSON.parse(leitor.result);
             if (!Array.isArray(dados.lancamentos) || !dados.categorias) throw new Error();
             if (!dados.lancamentos.every(item => Number.isInteger(item.valorCentavos) && item.data && item.descricao)) throw new Error();
+            if (dados.metasFinanceiras && !Array.isArray(dados.metasFinanceiras)) throw new Error();
             lancamentos = dados.lancamentos;
             categorias = dados.categorias;
+            metasFinanceiras = dados.metasFinanceiras || [];
             salvar(); popularMeses(); popularCategorias(); atualizar(); mensagem('Backup restaurado.');
         } catch {
             mensagem('Arquivo de backup inválido.', true);
@@ -467,8 +490,11 @@ function criarRecorrencia(original) {
 
 function somarMeses(dataIso, meses) {
     const [ano, mes, dia] = dataIso.split('-').map(Number);
-    const data = new Date(ano, mes - 1 + meses, dia);
-    return `${data.getFullYear()}-${String(data.getMonth() + 1).padStart(2, '0')}-${String(Math.min(dia, new Date(data.getFullYear(), data.getMonth() + 1, 0).getDate())).padStart(2, '0')}`;
+    const indiceMes = ano * 12 + mes - 1 + meses;
+    const anoDestino = Math.floor(indiceMes / 12);
+    const mesDestino = indiceMes % 12 + 1;
+    const ultimoDia = new Date(anoDestino, mesDestino, 0).getDate();
+    return `${anoDestino}-${String(mesDestino).padStart(2, '0')}-${String(Math.min(dia, ultimoDia)).padStart(2, '0')}`;
 }
 
 function registrarMudanca() {
@@ -511,8 +537,15 @@ function renderizarCalendario() {
             .reduce((soma, item) => soma + item.valorCentavos, 0);
         const celula = document.createElement('div');
         celula.className = 'calendar-day';
-        celula.innerHTML = `<strong>${dia}</strong>`;
-        if (gastos) celula.insertAdjacentHTML('beforeend', `<span class="calendar-value">${formatar(gastos)}</span>`);
+        const numeroDia = document.createElement('strong');
+        numeroDia.textContent = dia;
+        celula.append(numeroDia);
+        if (gastos) {
+            const valorGasto = document.createElement('span');
+            valorGasto.className = 'calendar-value';
+            valorGasto.textContent = formatar(gastos);
+            celula.append(valorGasto);
+        }
         calendario.append(celula);
     }
 }
@@ -528,7 +561,13 @@ function renderizarResumoAnual() {
         const despesas = total(itens, 'Despesa');
         const bloco = document.createElement('div');
         bloco.className = 'summary-item';
-        bloco.innerHTML = `<strong>${nomeMes(prefixo).split(' ')[0]}</strong>Saldo: ${formatar(receitas - despesas)}<br>Economia: ${receitas ? Math.round((receitas - despesas) / receitas * 100) : 0}%`;
+        const titulo = document.createElement('strong');
+        titulo.textContent = nomeMes(prefixo).split(' ')[0];
+        const saldo = document.createElement('div');
+        saldo.textContent = `Saldo: ${formatar(receitas - despesas)}`;
+        const economia = document.createElement('div');
+        economia.textContent = `Economia: ${receitas ? Math.round((receitas - despesas) / receitas * 100) : 0}%`;
+        bloco.append(titulo, saldo, economia);
         resumo.append(bloco);
     }
 }
@@ -560,7 +599,13 @@ function renderizarMetasFinanceiras() {
         const percentual = meta.alvo ? Math.min(100, Math.round(acumulado / meta.alvo * 100)) : 0;
         const item = document.createElement('div');
         item.className = 'summary-item';
-        item.innerHTML = `<strong>${meta.nome}</strong>${formatar(Math.max(acumulado, 0))} de ${formatar(meta.alvo)} (${percentual}%)<br>Prazo: ${meta.prazo}`;
+        const titulo = document.createElement('strong');
+        titulo.textContent = meta.nome;
+        const detalhes = document.createElement('div');
+        detalhes.textContent = `${formatar(Math.max(acumulado, 0))} de ${formatar(meta.alvo)} (${percentual}%)`;
+        const prazo = document.createElement('div');
+        prazo.textContent = `Prazo: ${meta.prazo}`;
+        item.append(titulo, detalhes, prazo);
         container.append(item);
     });
 }
