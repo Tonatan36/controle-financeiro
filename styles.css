@@ -428,6 +428,14 @@ dialog textarea { width: 100%; margin-top: 12px; resize: vertical; }
     border: 0;
 }
 
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        scroll-behavior: auto !important;
+        transition: none !important;
+        animation: none !important;
+    }
+}
+
 @media (max-width: 900px) {
     .main-grid {
         grid-template-columns: 1fr;

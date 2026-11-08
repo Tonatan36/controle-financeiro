@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Controle Financeiro do Casal</title>
-    <link rel="stylesheet" href="styles.css?v=4">
+    <link rel="stylesheet" href="styles.css">
     <link rel="manifest" href="manifest.webmanifest">
 </head>
 <body>
@@ -96,8 +96,8 @@
     </div>
 
     <div class="charts-grid">
-        <section class="card"><h2>Despesas por categoria</h2><canvas id="graficoCategorias" aria-label="Gráfico de despesas por categoria"></canvas></section>
-        <section class="card"><h2>Evolução do saldo</h2><canvas id="graficoEvolucao" aria-label="Gráfico de evolução do saldo"></canvas></section>
+        <section class="card"><h2>Despesas por categoria</h2><canvas id="graficoCategorias" role="img" aria-describedby="descricaoGraficoCategorias">Gráfico de despesas por categoria</canvas><p id="descricaoGraficoCategorias" class="chart-description sr-only"></p></section>
+        <section class="card"><h2>Evolução do saldo</h2><canvas id="graficoEvolucao" role="img" aria-describedby="descricaoGraficoEvolucao">Gráfico de evolução do saldo</canvas><p id="descricaoGraficoEvolucao" class="chart-description sr-only"></p></section>
     </div>
 
     <div class="planning-grid">
@@ -148,6 +148,6 @@
     </form>
 </dialog>
 
-<script src="app.js?v=5"></script>
+<script src="app.js"></script>
 </body>
 </html>

@@ -1,8 +1,4 @@
 const STORAGE = 'controleFinanceiroCasal-v2';
-const dadosPadrao = [
-    { id: 'exemplo-1', data: '2026-11-05', descricao: 'Exemplo – Salário', tipo: 'Receita', categoria: 'Salário', quem: 'Pessoa 1', valorCentavos: 400000 },
-    { id: 'exemplo-2', data: '2026-11-06', descricao: 'Exemplo – Compras do mês', tipo: 'Despesa', categoria: 'Mercado', quem: 'Pessoa 2', valorCentavos: 45000 }
-];
 const categoriasPadrao = {
     Mercado: 90000,
     Moradia: 150000,
@@ -30,19 +26,26 @@ inicializar();
 
 function $(id) { return document.getElementById(id); }
 
+function novoId() {
+    if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 function carregar() {
     try {
         const salvo = JSON.parse(localStorage.getItem(STORAGE));
-        if (salvo && Array.isArray(salvo.lancamentos) && salvo.categorias) return salvo;
+        if (salvo && validarBackup(salvo, false)) return salvo;
     } catch (erro) {
         console.error('Não foi possível ler os dados locais.', erro);
     }
-    return { lancamentos: dadosPadrao, categorias: categoriasPadrao, metasFinanceiras: [] };
+    return { lancamentos: [], categorias: categoriasPadrao, metasFinanceiras: [] };
 }
 
 function salvar() {
     try {
-        localStorage.setItem(STORAGE, JSON.stringify({ lancamentos, categorias, metasFinanceiras }));
+        const conteudo = JSON.stringify({ lancamentos, categorias, metasFinanceiras });
+        localStorage.setItem(STORAGE, conteudo);
+        if (localStorage.getItem(STORAGE) !== conteudo) throw new Error('O navegador não confirmou o armazenamento.');
         return true;
     } catch (erro) {
         console.error('Não foi possível salvar os dados locais.', erro);
@@ -191,14 +194,18 @@ function salvarLancamento(evento) {
     const data = $('lancData').value;
     if (descricao.length < 3) return mensagem('Informe uma descrição com pelo menos 3 caracteres.', true);
     if (!data || !Number.isFinite(valor) || valor <= 0) return mensagem('Informe uma data e um valor válidos.', true);
+    const dataNormalizada = normalizarData(data);
+    if (!dataNormalizada) return mensagem('Informe uma data válida.', true);
+    const parcelas = Math.max(1, Number($('lancParcelas').value) || 1);
+    const recorrencia = $('lancRecorrencia').value;
+    if (parcelas > 1 && recorrencia) return mensagem('Parcelamento e recorrência não podem ser usados juntos.', true);
     const id = $('lancId').value;
     const dados = {
-        id: id || crypto.randomUUID(),
-        data, descricao, tipo: $('lancTipo').value, categoria: el.categoria.value,
+        id: id || novoId(),
+        data: dataNormalizada, descricao, tipo: $('lancTipo').value, categoria: el.categoria.value,
         quem: $('lancQuem').value, valorCentavos: Math.round(valor * 100),
         situacao: $('lancSituacao').value, natureza: $('lancNatureza').value,
-        parcelas: Math.max(1, Number($('lancParcelas').value) || 1),
-        recorrencia: $('lancRecorrencia').value, observacao: $('lancObservacao').value.trim(),
+        parcelas, recorrencia, observacao: $('lancObservacao').value.trim(),
         parcelaAtual: 1
     };
     registrarMudanca();
@@ -208,10 +215,10 @@ function salvarLancamento(evento) {
         criarParcelas(dados);
         criarRecorrencia(dados);
     }
-    salvar();
+    if (!salvar()) return;
     cancelarEdicao();
     popularMeses();
-    el.mes.value = data.slice(0, 7);
+    el.mes.value = dataNormalizada.slice(0, 7);
     atualizar();
     mensagem(id ? 'Lançamento atualizado.' : 'Lançamento adicionado.');
 }
@@ -251,14 +258,17 @@ function excluirLancamento(id) {
     if (item && confirm(`Apagar "${item.descricao}"?`)) {
         registrarMudanca();
         lancamentos = lancamentos.filter(lancamento => lancamento.id !== id);
-        salvar(); atualizar(); mensagem('Lançamento apagado.');
+        if (!salvar()) return;
+        atualizar(); mensagem('Lançamento apagado.');
     }
 }
 
 function limparTudo() {
     if (lancamentos.length && confirm('Apagar todos os lançamentos registrados?')) {
         registrarMudanca();
-        lancamentos = []; salvar(); popularMeses(); atualizar(); mensagem('Todos os lançamentos foram apagados.');
+        lancamentos = [];
+        if (!salvar()) return;
+        popularMeses(); atualizar(); mensagem('Todos os lançamentos foram apagados.');
     }
 }
 
@@ -267,7 +277,8 @@ function limparMes() {
     if (itens.length && confirm(`Apagar todos os lançamentos de ${nomeMes(el.mes.value)}?`)) {
         registrarMudanca();
         lancamentos = lancamentos.filter(item => !item.data.startsWith(el.mes.value));
-        salvar(); atualizar(); mensagem('Lançamentos do mês apagados.');
+        if (!salvar()) return;
+        atualizar(); mensagem('Lançamentos do mês apagados.');
     }
 }
 
@@ -330,6 +341,9 @@ function desenharGraficoCategorias(itens) {
         nome,
         valor: total(itens.filter(item => item.tipo === 'Despesa' && item.categoria === nome), 'Despesa')
     })).filter(item => item.valor > 0);
+    $('descricaoGraficoCategorias').textContent = dados.length
+        ? dados.map(item => `${item.nome}: ${formatar(item.valor)}`).join('; ')
+        : 'Sem despesas neste mês.';
     if (!dados.length) return ctx.fillText('Sem despesas neste mês', 20, 40);
     const maximo = Math.max(...dados.map(item => item.valor));
     dados.forEach((item, indice) => {
@@ -373,6 +387,9 @@ function desenharEvolucao() {
         ctx.beginPath();
     });
     ctx.stroke();
+    $('descricaoGraficoEvolucao').textContent = meses.map((mes, indice) =>
+        `${nomeMes(mes)}: ${formatar(valores[indice])}`
+    ).join('; ');
 }
 
 function abrirCategorias() {
@@ -391,8 +408,9 @@ function salvarCategorias(evento) {
         novas[nome] = Math.round(meta * 100);
     }
     if (!Object.keys(novas).length) return mensagem('Informe pelo menos uma categoria.', true);
+    registrarMudanca();
     categorias = novas;
-    salvar();
+    if (!salvar()) return;
     popularCategorias();
     $('dialogCategorias').close();
     atualizar();
@@ -410,13 +428,13 @@ function importarJson(evento) {
     leitor.onload = () => {
         try {
             const dados = JSON.parse(leitor.result);
-            if (!Array.isArray(dados.lancamentos) || !dados.categorias) throw new Error();
-            if (!dados.lancamentos.every(item => Number.isInteger(item.valorCentavos) && item.data && item.descricao)) throw new Error();
-            if (dados.metasFinanceiras && !Array.isArray(dados.metasFinanceiras)) throw new Error();
+            if (!validarBackup(dados)) throw new Error();
+            if (!confirm('Restaurar este backup substituirá todos os dados atuais. Deseja continuar?')) return;
             lancamentos = dados.lancamentos;
             categorias = dados.categorias;
             metasFinanceiras = dados.metasFinanceiras || [];
-            salvar(); popularMeses(); popularCategorias(); atualizar(); mensagem('Backup restaurado.');
+            if (!salvar()) return;
+            popularMeses(); popularCategorias(); atualizar(); mensagem('Backup restaurado.');
         } catch {
             mensagem('Arquivo de backup inválido.', true);
         }
@@ -452,6 +470,44 @@ function hoje() {
     return `${data.getFullYear()}-${String(data.getMonth() + 1).padStart(2, '0')}-${String(data.getDate()).padStart(2, '0')}`;
 }
 
+function normalizarData(valor) {
+    if (typeof valor !== 'string') return '';
+    const texto = valor.trim();
+    let partes;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(texto)) partes = texto.split('-').map(Number);
+    else if (/^\d{2}\/\d{2}\/\d{4}$/.test(texto)) {
+        const [dia, mes, ano] = texto.split('/').map(Number);
+        partes = [ano, mes, dia];
+    } else return '';
+    const [ano, mes, dia] = partes;
+    const data = new Date(ano, mes - 1, dia);
+    if (data.getFullYear() !== ano || data.getMonth() !== mes - 1 || data.getDate() !== dia) return '';
+    return `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+}
+
+function validarLancamento(item) {
+    return item && typeof item === 'object'
+        && typeof item.id === 'string'
+        && typeof item.descricao === 'string' && item.descricao.trim().length > 0
+        && ['Receita', 'Despesa'].includes(item.tipo)
+        && typeof item.categoria === 'string'
+        && typeof item.quem === 'string'
+        && Number.isInteger(item.valorCentavos) && item.valorCentavos > 0
+        && Boolean(normalizarData(item.data));
+}
+
+function validarBackup(dados, exigirMetas = true) {
+    if (!dados || typeof dados !== 'object' || !Array.isArray(dados.lancamentos)
+        || !dados.categorias || Array.isArray(dados.categorias) || typeof dados.categorias !== 'object') return false;
+    if (!Object.values(dados.categorias).every(valor => Number.isInteger(valor) && valor >= 0)) return false;
+    if (!dados.lancamentos.every(validarLancamento)) return false;
+    if (exigirMetas && dados.metasFinanceiras !== undefined && !Array.isArray(dados.metasFinanceiras)) return false;
+    return !exigirMetas || dados.metasFinanceiras === undefined || dados.metasFinanceiras.every(meta =>
+        meta && typeof meta.id === 'string' && typeof meta.nome === 'string'
+        && Number.isInteger(meta.alvo) && meta.alvo >= 0 && typeof meta.prazo === 'string'
+    );
+}
+
 function formatar(centavos) { return moeda.format(centavos / 100); }
 function formatarData(data) { const [ano, mes, dia] = data.split('-'); return `${dia}/${mes}/${ano}`; }
 function nomeMes(mes) { const [ano, numero] = mes.split('-').map(Number); return new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric' }).format(new Date(ano, numero - 1, 1)); }
@@ -471,7 +527,7 @@ function criarParcelas(original) {
     for (let parcela = 2; parcela <= totalParcelas; parcela++) {
         const data = somarMeses(original.data, parcela - 1);
         lancamentos.push({
-            ...original, id: crypto.randomUUID(), data, descricao: `${original.descricao} (${parcela}/${totalParcelas})`,
+            ...original, id: novoId(), data, descricao: `${original.descricao} (${parcela}/${totalParcelas})`,
             parcelaAtual: parcela, valorCentavos: valorOriginal
         });
     }
@@ -574,12 +630,15 @@ function renderizarResumoAnual() {
 
 function salvarMeta(evento) {
     evento.preventDefault();
+    const nome = $('metaNome').value.trim();
+    const valor = Number($('metaValor').value);
+    if (!nome || !Number.isFinite(valor) || valor <= 0) return mensagem('Informe um nome e um valor alvo válidos.', true);
     registrarMudanca();
     metasFinanceiras.push({
-        id: crypto.randomUUID(), nome: $('metaNome').value.trim(),
-        alvo: Math.round(Number($('metaValor').value) * 100), prazo: $('metaPrazo').value
+        id: novoId(), nome,
+        alvo: Math.round(valor * 100), prazo: $('metaPrazo').value
     });
-    salvar();
+    if (!salvar()) return;
     $('dialogMeta').close();
     $('formMeta').reset();
     renderizarMetasFinanceiras();
@@ -628,7 +687,7 @@ function importarExtrato(evento) {
         if (!novos.length) return mensagem('Nenhuma transação reconhecida no arquivo.', true);
         registrarMudanca();
         lancamentos.push(...novos);
-        salvar();
+        if (!salvar()) return;
         popularMeses();
         atualizar();
         mensagem(`${novos.length} transações importadas.`);
@@ -638,30 +697,70 @@ function importarExtrato(evento) {
 }
 
 function importarCsvTexto(texto) {
-    const linhas = texto.trim().split(/\r?\n/).slice(1);
-    return linhas.map(linha => {
-        const partes = linha.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g) || [];
-        const [data, descricao, tipo, categoria, quem, valor] = partes.map(valor => valor.replace(/^"|"$/g, '').replace(/""/g, '"'));
+    const linhas = texto.trim().split(/\r?\n/).filter(Boolean);
+    const [cabecalho, ...dados] = linhas.map(linha => parseCsv(linha));
+    const indice = nome => cabecalho.findIndex(valor => valor.toLowerCase() === nome.toLowerCase());
+    const campos = {
+        data: indice('Data'), descricao: indice('Descrição'), tipo: indice('Tipo'),
+        categoria: indice('Categoria'), quem: indice('Quem'), valor: indice('Valor')
+    };
+    if (campos.data < 0 || campos.descricao < 0 || campos.valor < 0) {
+        campos.data = 0; campos.descricao = 1; campos.tipo = 2;
+        campos.categoria = 3; campos.quem = 4; campos.valor = 5;
+    }
+    return dados.map(partes => {
+        const data = normalizarData(partes[campos.data]);
+        const descricao = partes[campos.descricao]?.trim();
+        const valor = partes[campos.valor]?.trim();
         if (!data || !descricao || !valor) return null;
-        const valorCentavos = Math.round(Number(valor.replace(',', '.')) * 100);
+        const valorNumerico = Number(valor.includes(',')
+            ? valor.replace(/\./g, '').replace(',', '.')
+            : valor.replace(',', '.'));
+        const valorCentavos = Math.round(valorNumerico * 100);
+        if (!Number.isFinite(valorNumerico) || valorCentavos <= 0) return null;
         return {
-            id: crypto.randomUUID(), data, descricao, tipo: tipo || 'Despesa',
-            categoria: categoria || 'Outros', quem: quem || 'Pessoa 1',
+            id: novoId(), data, descricao,
+            tipo: ['Receita', 'Despesa'].includes(partes[campos.tipo]?.trim()) ? partes[campos.tipo].trim() : 'Despesa',
+            categoria: partes[campos.categoria]?.trim() || 'Outros',
+            quem: partes[campos.quem]?.trim() || 'Pessoa 1',
             valorCentavos: Math.abs(valorCentavos), situacao: 'Concluído', natureza: 'Variável'
         };
     }).filter(Boolean);
 }
 
+function parseCsv(linha) {
+    const partes = [];
+    let atual = '';
+    let aspas = false;
+    for (let indice = 0; indice < linha.length; indice++) {
+        const caractere = linha[indice];
+        if (caractere === '"') {
+            if (aspas && linha[indice + 1] === '"') {
+                atual += '"';
+                indice++;
+            } else aspas = !aspas;
+        } else if (caractere === ',' && !aspas) {
+            partes.push(atual.trim());
+            atual = '';
+        } else atual += caractere;
+    }
+    partes.push(atual.trim());
+    return partes;
+}
+
 function importarOfx(texto) {
     const transacoes = [];
-    for (const bloco of texto.match(/<STMTTRN>[\s\S]*?<\/STMTTRN>/gi) || []) {
+    const blocos = texto.match(/<STMTTRN>[\s\S]*?(?=<STMTTRN>|<\/BANKTRANLIST>|$)/gi)
+        || texto.match(/<STMTTRN>[\s\S]*?<\/STMTTRN>/gi)
+        || [];
+    for (const bloco of blocos) {
         const valorTexto = bloco.match(/<TRNAMT>([-\d.,]+)/i)?.[1].replace(',', '.');
         const nome = bloco.match(/<MEMO>([^<]+)/i)?.[1].trim();
         const dataTexto = bloco.match(/<DTPOSTED>(\d{4})(\d{2})(\d{2})/i);
         if (!valorTexto || !dataTexto) continue;
         const valorCentavos = Math.round(Math.abs(Number(valorTexto)) * 100);
         transacoes.push({
-            id: crypto.randomUUID(), data: `${dataTexto[1]}-${dataTexto[2]}-${dataTexto[3]}`,
+            id: novoId(), data: `${dataTexto[1]}-${dataTexto[2]}-${dataTexto[3]}`,
             descricao: nome || 'Importação bancária', tipo: Number(valorTexto) >= 0 ? 'Receita' : 'Despesa',
             categoria: Number(valorTexto) >= 0 ? 'Outros' : 'Mercado', quem: 'Pessoa 1',
             valorCentavos, situacao: 'Concluído', natureza: 'Variável'
