@@ -11,6 +11,7 @@
     --border-color: #e5e7eb;
 }
 
+html.dark,
 body.dark {
     --bg-color: #111827;
     --card-bg: #1f2937;

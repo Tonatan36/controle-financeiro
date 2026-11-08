@@ -208,14 +208,18 @@ function salvarLancamento(evento) {
         parcelas, recorrencia, observacao: $('lancObservacao').value.trim(),
         parcelaAtual: 1
     };
-    registrarMudanca();
+    const estadoAnterior = capturarEstado();
     if (id) lancamentos[lancamentos.findIndex(item => item.id === id)] = dados;
     else {
         lancamentos.push(dados);
         criarParcelas(dados);
         criarRecorrencia(dados);
     }
-    if (!salvar()) return;
+    if (!salvar()) {
+        restaurarEstado(estadoAnterior);
+        return;
+    }
+    registrarMudanca(estadoAnterior);
     cancelarEdicao();
     popularMeses();
     el.mes.value = dataNormalizada.slice(0, 7);
@@ -256,18 +260,26 @@ function cancelarEdicao() {
 function excluirLancamento(id) {
     const item = lancamentos.find(lancamento => lancamento.id === id);
     if (item && confirm(`Apagar "${item.descricao}"?`)) {
-        registrarMudanca();
+        const estadoAnterior = capturarEstado();
         lancamentos = lancamentos.filter(lancamento => lancamento.id !== id);
-        if (!salvar()) return;
+        if (!salvar()) {
+            restaurarEstado(estadoAnterior);
+            return;
+        }
+        registrarMudanca(estadoAnterior);
         atualizar(); mensagem('Lançamento apagado.');
     }
 }
 
 function limparTudo() {
     if (lancamentos.length && confirm('Apagar todos os lançamentos registrados?')) {
-        registrarMudanca();
+        const estadoAnterior = capturarEstado();
         lancamentos = [];
-        if (!salvar()) return;
+        if (!salvar()) {
+            restaurarEstado(estadoAnterior);
+            return;
+        }
+        registrarMudanca(estadoAnterior);
         popularMeses(); atualizar(); mensagem('Todos os lançamentos foram apagados.');
     }
 }
@@ -275,9 +287,13 @@ function limparTudo() {
 function limparMes() {
     const itens = lancamentosDoMes();
     if (itens.length && confirm(`Apagar todos os lançamentos de ${nomeMes(el.mes.value)}?`)) {
-        registrarMudanca();
+        const estadoAnterior = capturarEstado();
         lancamentos = lancamentos.filter(item => !item.data.startsWith(el.mes.value));
-        if (!salvar()) return;
+        if (!salvar()) {
+            restaurarEstado(estadoAnterior);
+            return;
+        }
+        registrarMudanca(estadoAnterior);
         atualizar(); mensagem('Lançamentos do mês apagados.');
     }
 }
@@ -403,14 +419,21 @@ function salvarCategorias(evento) {
     for (const linha of $('categoriasTexto').value.split('\n')) {
         const [nome, valor] = linha.split(';').map(parte => parte.trim());
         if (!nome) continue;
+        if (['__proto__', 'prototype', 'constructor'].includes(nome)) {
+            return mensagem('Nome de categoria reservado não permitido.', true);
+        }
         const meta = Number(String(valor || 0).replace(',', '.'));
         if (!Number.isFinite(meta) || meta < 0) return mensagem('Meta inválida. Use números iguais ou maiores que zero.', true);
         novas[nome] = Math.round(meta * 100);
     }
     if (!Object.keys(novas).length) return mensagem('Informe pelo menos uma categoria.', true);
-    registrarMudanca();
+    const estadoAnterior = capturarEstado();
     categorias = novas;
-    if (!salvar()) return;
+    if (!salvar()) {
+        restaurarEstado(estadoAnterior);
+        return;
+    }
+    registrarMudanca(estadoAnterior);
     popularCategorias();
     $('dialogCategorias').close();
     atualizar();
@@ -430,10 +453,15 @@ function importarJson(evento) {
             const dados = JSON.parse(leitor.result);
             if (!validarBackup(dados)) throw new Error();
             if (!confirm('Restaurar este backup substituirá todos os dados atuais. Deseja continuar?')) return;
+            const estadoAnterior = capturarEstado();
             lancamentos = dados.lancamentos;
             categorias = dados.categorias;
             metasFinanceiras = dados.metasFinanceiras || [];
-            if (!salvar()) return;
+            if (!salvar()) {
+                restaurarEstado(estadoAnterior);
+                return;
+            }
+            registrarMudanca(estadoAnterior);
             popularMeses(); popularCategorias(); atualizar(); mensagem('Backup restaurado.');
         } catch {
             mensagem('Arquivo de backup inválido.', true);
@@ -499,12 +527,14 @@ function validarLancamento(item) {
 function validarBackup(dados, exigirMetas = true) {
     if (!dados || typeof dados !== 'object' || !Array.isArray(dados.lancamentos)
         || !dados.categorias || Array.isArray(dados.categorias) || typeof dados.categorias !== 'object') return false;
+    if (Object.keys(dados.categorias).some(nome => ['__proto__', 'prototype', 'constructor'].includes(nome))) return false;
     if (!Object.values(dados.categorias).every(valor => Number.isInteger(valor) && valor >= 0)) return false;
     if (!dados.lancamentos.every(validarLancamento)) return false;
     if (exigirMetas && dados.metasFinanceiras !== undefined && !Array.isArray(dados.metasFinanceiras)) return false;
     return !exigirMetas || dados.metasFinanceiras === undefined || dados.metasFinanceiras.every(meta =>
         meta && typeof meta.id === 'string' && typeof meta.nome === 'string'
         && Number.isInteger(meta.alvo) && meta.alvo >= 0 && typeof meta.prazo === 'string'
+        && meta.nome.trim().length > 0 && /^\d{4}-\d{2}$/.test(meta.prazo)
     );
 }
 
@@ -553,18 +583,34 @@ function somarMeses(dataIso, meses) {
     return `${anoDestino}-${String(mesDestino).padStart(2, '0')}-${String(Math.min(dia, ultimoDia)).padStart(2, '0')}`;
 }
 
-function registrarMudanca() {
-    historico.push(JSON.stringify({ lancamentos, categorias, metasFinanceiras }));
+function capturarEstado() {
+    return JSON.parse(JSON.stringify({ lancamentos, categorias, metasFinanceiras }));
+}
+
+function restaurarEstado(estado) {
+    lancamentos = estado.lancamentos;
+    categorias = estado.categorias;
+    metasFinanceiras = estado.metasFinanceiras;
+}
+
+function registrarMudanca(estadoAnterior) {
+    historico.push(JSON.stringify(estadoAnterior || capturarEstado()));
     if (historico.length > 20) historico.shift();
 }
 
 function desfazer() {
     if (!historico.length) return mensagem('Não há alterações para desfazer.', true);
-    const estado = JSON.parse(historico.pop());
+    const estadoDesfeito = historico.pop();
+    const estadoAtual = capturarEstado();
+    const estado = JSON.parse(estadoDesfeito);
     lancamentos = estado.lancamentos;
     categorias = estado.categorias;
     metasFinanceiras = estado.metasFinanceiras;
-    salvar();
+    if (!salvar()) {
+        restaurarEstado(estadoAtual);
+        historico.push(estadoDesfeito);
+        return;
+    }
     popularMeses();
     popularCategorias();
     atualizar();
@@ -633,12 +679,16 @@ function salvarMeta(evento) {
     const nome = $('metaNome').value.trim();
     const valor = Number($('metaValor').value);
     if (!nome || !Number.isFinite(valor) || valor <= 0) return mensagem('Informe um nome e um valor alvo válidos.', true);
-    registrarMudanca();
+    const estadoAnterior = capturarEstado();
     metasFinanceiras.push({
         id: novoId(), nome,
         alvo: Math.round(valor * 100), prazo: $('metaPrazo').value
     });
-    if (!salvar()) return;
+    if (!salvar()) {
+        restaurarEstado(estadoAnterior);
+        return;
+    }
+    registrarMudanca(estadoAnterior);
     $('dialogMeta').close();
     $('formMeta').reset();
     renderizarMetasFinanceiras();
@@ -685,9 +735,19 @@ function importarExtrato(evento) {
             ? importarOfx(texto)
             : importarCsvTexto(texto);
         if (!novos.length) return mensagem('Nenhuma transação reconhecida no arquivo.', true);
-        registrarMudanca();
+        const estadoAnterior = capturarEstado();
+        novos.forEach(item => {
+            if (!Object.prototype.hasOwnProperty.call(categorias, item.categoria)
+                && !['__proto__', 'prototype', 'constructor'].includes(item.categoria)) {
+                categorias[item.categoria] = 0;
+            }
+        });
         lancamentos.push(...novos);
-        if (!salvar()) return;
+        if (!salvar()) {
+            restaurarEstado(estadoAnterior);
+            return;
+        }
+        registrarMudanca(estadoAnterior);
         popularMeses();
         atualizar();
         mensagem(`${novos.length} transações importadas.`);

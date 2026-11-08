@@ -1,5 +1,6 @@
-const CACHE = 'controle-financeiro-v2';
+const CACHE = 'controle-financeiro-v3';
 const ARQUIVOS = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest', './icon.svg'];
+const ESTATICOS = new Set(['styles.css', 'app.js', 'manifest.webmanifest', 'icon.svg']);
 
 self.addEventListener('install', evento => {
     evento.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ARQUIVOS)));
@@ -15,17 +16,25 @@ self.addEventListener('activate', evento => {
 
 self.addEventListener('fetch', evento => {
     if (evento.request.method !== 'GET') return;
-    evento.respondWith(
-        fetch(evento.request)
-            .then(resposta => {
-                if (resposta.ok) {
-                    const copia = resposta.clone();
-                    caches.open(CACHE).then(cache => cache.put(evento.request, copia));
-                }
-                return resposta;
-            })
-            .catch(() => caches.match(evento.request, { ignoreSearch: true }).then(resposta =>
-                resposta || caches.match('./index.html')
-            ))
-    );
+    const url = new URL(evento.request.url);
+    const navegacao = evento.request.mode === 'navigate';
+
+    if (navegacao) {
+        evento.respondWith(
+            fetch(evento.request)
+                .then(resposta => {
+                    caches.open(CACHE).then(cache => cache.put('./index.html', resposta.clone()));
+                    return resposta;
+                })
+                .catch(() => caches.match('./index.html'))
+        );
+        return;
+    }
+
+    if (ESTATICOS.has(url.pathname.split('/').pop())) {
+        evento.respondWith(
+            caches.match(evento.request, { ignoreSearch: true })
+                .then(resposta => resposta || fetch(evento.request))
+        );
+    }
 });
