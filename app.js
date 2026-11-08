@@ -34,7 +34,13 @@ function novoId() {
 function carregar() {
     try {
         const salvo = JSON.parse(localStorage.getItem(STORAGE));
-        if (salvo && validarBackup(salvo, false)) return salvo;
+        if (salvo && validarBackup(salvo, false)) {
+            salvo.lancamentos.forEach(item => {
+                if (item.quem === 'Pessoa 1') item.quem = 'Blenda';
+                if (item.quem === 'Pessoa 2') item.quem = 'Ewerton';
+            });
+            return salvo;
+        }
     } catch (erro) {
         console.error('Não foi possível ler os dados locais.', erro);
     }
@@ -782,7 +788,7 @@ function importarCsvTexto(texto) {
             id: novoId(), data, descricao,
             tipo: ['Receita', 'Despesa'].includes(partes[campos.tipo]?.trim()) ? partes[campos.tipo].trim() : 'Despesa',
             categoria: partes[campos.categoria]?.trim() || 'Outros',
-            quem: partes[campos.quem]?.trim() || 'Pessoa 1',
+            quem: partes[campos.quem]?.trim() || 'Juntos',
             valorCentavos: Math.abs(valorCentavos), situacao: 'Concluído', natureza: 'Variável'
         };
     }).filter(Boolean);
@@ -822,7 +828,7 @@ function importarOfx(texto) {
         transacoes.push({
             id: novoId(), data: `${dataTexto[1]}-${dataTexto[2]}-${dataTexto[3]}`,
             descricao: nome || 'Importação bancária', tipo: Number(valorTexto) >= 0 ? 'Receita' : 'Despesa',
-            categoria: Number(valorTexto) >= 0 ? 'Outros' : 'Mercado', quem: 'Pessoa 1',
+            categoria: Number(valorTexto) >= 0 ? 'Outros' : 'Mercado', quem: 'Juntos',
             valorCentavos, situacao: 'Concluído', natureza: 'Variável'
         });
     }
