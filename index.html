@@ -33,6 +33,7 @@
         <button type="button" id="relatorio" class="btn-tool">Relatório anual</button>
         <button type="button" id="imprimir" class="btn-tool">Imprimir</button>
         <button type="button" id="desfazer" class="btn-tool">Desfazer</button>
+        <button type="button" id="sincronizar" class="btn-tool">Sincronizar</button>
         <button type="button" id="limparMes" class="btn-tool danger">Limpar mês</button>
         <button type="button" id="limparLancamentos" class="btn-tool danger">Limpar tudo</button>
     </div>
@@ -64,6 +65,7 @@
                         <th>Tipo</th>
                         <th>Categoria</th>
                         <th>Quem</th>
+                        <th>Pagamento</th>
                         <th><button class="sort" data-sort="valorCentavos">Valor</button></th>
                         <th>Ações</th>
                     </tr></thead>
@@ -81,13 +83,29 @@
                 <div class="form-group"><label for="lancTipo">Tipo</label><select id="lancTipo"><option>Despesa</option><option>Receita</option></select></div>
                 <div class="form-group"><label for="lancCategoria">Categoria</label><select id="lancCategoria"></select></div>
                 <div class="form-group"><label for="lancQuem">Quem</label><select id="lancQuem"><option>Blenda</option><option>Ewerton</option><option>Juntos</option></select></div>
-                <div class="form-group"><label for="lancValor">Valor (R$)</label><input type="number" id="lancValor" min="0.01" step="0.01" required></div>
+                <div class="form-group">
+                    <label for="lancValor">Valor (R$)</label>
+                    <input type="number" id="lancValor" min="0.01" step="0.01" required>
+                    <small id="ajudaValor" class="muted"></small>
+                </div>
                 <div class="form-grid">
                     <div class="form-group"><label for="lancSituacao">Situação</label><select id="lancSituacao"><option>Concluído</option><option>Pendente</option></select></div>
                     <div class="form-group"><label for="lancNatureza">Natureza</label><select id="lancNatureza"><option>Variável</option><option>Fixo</option></select></div>
                 </div>
+                <div id="grupoPagamento" class="form-group hidden">
+                    <label for="lancFormaPagamento">Forma de pagamento</label>
+                    <select id="lancFormaPagamento">
+                        <option value="avista">À vista</option>
+                        <option value="parcelada">Parcelada</option>
+                    </select>
+                </div>
+                <div id="grupoOrigemPagamento" class="form-group hidden">
+                    <label id="rotuloOrigemPagamento" for="lancOrigemPagamento">Conta de origem</label>
+                    <input type="text" id="lancOrigemPagamento" maxlength="60" list="opcoesOrigemPagamento" placeholder="Ex.: Conta corrente">
+                    <datalist id="opcoesOrigemPagamento"></datalist>
+                </div>
                 <div class="form-grid">
-                    <div class="form-group"><label for="lancParcelas">Parcelas</label><input type="number" id="lancParcelas" min="1" max="120" value="1"></div>
+                    <div id="grupoParcelas" class="form-group hidden"><label for="lancParcelas">Número de parcelas</label><input type="number" id="lancParcelas" min="2" max="120" value="2"></div>
                     <div class="form-group"><label for="lancRecorrencia">Recorrência</label><select id="lancRecorrencia"><option value="">Nenhuma</option><option>Mensal</option></select></div>
                 </div>
                 <div class="form-group"><label for="lancObservacao">Observações</label><textarea id="lancObservacao" rows="3"></textarea></div>
@@ -132,7 +150,7 @@
         <p class="muted">Uma categoria por linha no formato <strong>Nome;1500</strong>, usando ponto como separador decimal.</p>
         <textarea id="categoriasTexto" rows="10"></textarea>
         <div class="dialog-actions">
-            <button type="button" value="cancelar" class="btn btn-secondary" onclick="document.getElementById('dialogCategorias').close()">Cancelar</button>
+            <button type="button" id="cancelarCategorias" class="btn btn-secondary">Cancelar</button>
             <button value="salvar" id="salvarCategorias" class="btn">Salvar</button>
         </div>
     </form>
@@ -145,12 +163,29 @@
         <div class="form-group"><label for="metaValor">Valor alvo</label><input id="metaValor" type="number" min="0.01" step="0.01" required></div>
         <div class="form-group"><label for="metaPrazo">Prazo</label><input id="metaPrazo" type="month" required></div>
         <div class="dialog-actions">
-            <button type="button" class="btn btn-secondary" onclick="document.getElementById('dialogMeta').close()">Cancelar</button>
+            <button type="button" id="cancelarMeta" class="btn btn-secondary">Cancelar</button>
             <button type="submit" class="btn">Salvar meta</button>
         </div>
     </form>
 </dialog>
 
+<dialog id="dialogSincronizacao">
+    <form id="formSincronizacao">
+        <h2>Sincronizar dados</h2>
+        <p class="muted">Digite a senha compartilhada configurada para este app. Ela será mantida apenas nesta sessão do navegador.</p>
+        <div class="form-group">
+            <label for="senhaSincronizacao">Senha compartilhada</label>
+            <input id="senhaSincronizacao" type="password" autocomplete="current-password" required>
+        </div>
+        <div id="mensagemSincronizacao" class="mensagem" role="status" aria-live="polite"></div>
+        <div class="dialog-actions">
+            <button type="button" id="fecharSincronizacao" class="btn btn-secondary">Fechar</button>
+            <button type="submit" class="btn">Conectar e sincronizar</button>
+        </div>
+    </form>
+</dialog>
+
+<script src="indexeddb.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

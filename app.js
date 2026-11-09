@@ -1,4 +1,6 @@
 const STORAGE = 'controleFinanceiroCasal-v2';
+const STORAGE_REVISAO_SYNC = 'controleFinanceiroSyncRevision-v1';
+const STORAGE_SENHA_SYNC = 'controleFinanceiroSyncPassword-v1';
 const categoriasPadrao = {
     Mercado: 90000,
     Moradia: 150000,
@@ -7,12 +9,18 @@ const categoriasPadrao = {
     Salário: 0
 };
 
-let banco = carregar();
+let banco = { lancamentos: [], categorias: categoriasPadrao, metasFinanceiras: [] };
 let lancamentos = banco.lancamentos;
 let categorias = banco.categorias;
 let metasFinanceiras = banco.metasFinanceiras || [];
 let historico = [];
 let ordenacao = { campo: 'data', direcao: -1 };
+let senhaSincronizacao = sessionStorage.getItem(STORAGE_SENHA_SYNC);
+const revisaoSalva = localStorage.getItem(STORAGE_REVISAO_SYNC);
+let revisaoSincronizacao = revisaoSalva !== null && Number.isSafeInteger(Number(revisaoSalva))
+    ? Number(revisaoSalva) : null;
+let tarefaSincronizacao = Promise.resolve();
+let erroSincronizacao = '';
 
 const el = {
     mes: $('mesAnalise'), tabela: $('tabelaLancamentos'), saldo: $('kpiSaldo'), receitas: $('kpiReceitas'),
@@ -22,7 +30,10 @@ const el = {
 };
 const moeda = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
 
-inicializar();
+inicializar().catch(erro => {
+    console.error('Não foi possível inicializar o armazenamento financeiro.', erro);
+    mensagem('Não foi possível conectar ao banco de dados do navegador. Recarregue a página e tente novamente.', true);
+});
 
 function $(id) { return document.getElementById(id); }
 
@@ -31,39 +42,194 @@ function novoId() {
     return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
-function carregar() {
-    try {
-        const salvo = JSON.parse(localStorage.getItem(STORAGE));
-        if (salvo && validarBackup(salvo, false)) {
-            salvo.lancamentos.forEach(item => {
-                if (item.quem === 'Pessoa 1') item.quem = 'Blenda';
-                if (item.quem === 'Pessoa 2') item.quem = 'Ewerton';
-            });
-            return salvo;
-        }
-    } catch (erro) {
-        console.error('Não foi possível ler os dados locais.', erro);
+async function carregar() {
+    let salvo = await window.financeiroDB.carregar();
+    if (salvo && !validarBackup(salvo, false)) {
+        throw new Error('Os dados armazenados no IndexedDB são inválidos.');
     }
-    return { lancamentos: [], categorias: categoriasPadrao, metasFinanceiras: [] };
+
+    if (!salvo) {
+        try {
+            salvo = JSON.parse(localStorage.getItem(STORAGE));
+        } catch (erro) {
+            console.error('Não foi possível ler os dados antigos do navegador.', erro);
+        }
+        if (!salvo || !validarBackup(salvo, false)) {
+            return { lancamentos: [], categorias: categoriasPadrao, metasFinanceiras: [] };
+        }
+        await window.financeiroDB.salvar(salvo);
+    }
+
+    salvo.lancamentos.forEach(item => {
+        if (item.quem === 'Pessoa 1') item.quem = 'Blenda';
+        if (item.quem === 'Pessoa 2') item.quem = 'Ewerton';
+    });
+    return salvo;
 }
 
-function salvar() {
+async function salvar() {
     try {
-        const conteudo = JSON.stringify({ lancamentos, categorias, metasFinanceiras });
-        localStorage.setItem(STORAGE, conteudo);
-        if (localStorage.getItem(STORAGE) !== conteudo) throw new Error('O navegador não confirmou o armazenamento.');
-        return true;
+        await salvarLocalmente();
     } catch (erro) {
-        console.error('Não foi possível salvar os dados locais.', erro);
-        mensagem('Não foi possível salvar os dados. Verifique o armazenamento do navegador.', true);
+        console.error('Não foi possível salvar os dados no IndexedDB.', erro);
+        mensagem('Não foi possível salvar os dados no IndexedDB. Verifique o armazenamento do navegador.', true);
         return false;
     }
+    if (senhaSincronizacao) {
+        try {
+            await sincronizarComServidor();
+        } catch (erro) {
+            console.error('Não foi possível sincronizar os dados.', erro);
+            erroSincronizacao = ` Salvo neste dispositivo, mas não sincronizado: ${erro.message}`;
+        }
+    }
+    return true;
 }
 
-function inicializar() {
+function estadoAtual() {
+    return { lancamentos, categorias, metasFinanceiras };
+}
+
+async function salvarLocalmente() {
+    await window.financeiroDB.salvar(estadoAtual());
+}
+
+function mesclarEstados(remoto, local) {
+    const mesclarPorId = (primeiro, segundo) => {
+        const itens = new Map(primeiro.map(item => [item.id, item]));
+        segundo.forEach(item => itens.set(item.id, item));
+        return [...itens.values()];
+    };
+    return {
+        lancamentos: mesclarPorId(remoto.lancamentos, local.lancamentos),
+        categorias: { ...remoto.categorias, ...local.categorias },
+        metasFinanceiras: mesclarPorId(remoto.metasFinanceiras || [], local.metasFinanceiras || [])
+    };
+}
+
+function aplicarEstado(estado) {
+    lancamentos = estado.lancamentos;
+    categorias = estado.categorias;
+    metasFinanceiras = estado.metasFinanceiras || [];
+}
+
+async function requisicaoSincronizacao(metodo, corpo) {
+    const resposta = await fetch('/api/sync', {
+        method: metodo,
+        headers: {
+            Authorization: `Bearer ${senhaSincronizacao}`,
+            ...(corpo ? { 'Content-Type': 'application/json' } : {})
+        },
+        ...(corpo ? { body: JSON.stringify(corpo) } : {})
+    });
+    const resultado = await resposta.json().catch(() => ({}));
+    if (!resposta.ok) throw new Error(resultado.erro || `Erro de sincronização (${resposta.status}).`);
+    return resultado;
+}
+
+function sincronizarComServidor(interativo = false) {
+    const tarefa = tarefaSincronizacao.then(() => executarSincronizacao(interativo));
+    tarefaSincronizacao = tarefa.catch(() => {});
+    return tarefa;
+}
+
+async function executarSincronizacao(interativo) {
+    if (!senhaSincronizacao) return abrirSincronizacao();
+
+    let remoto = await requisicaoSincronizacao('GET');
+    let local = estadoAtual();
+    if (revisaoSincronizacao !== null && remoto.revision !== revisaoSincronizacao) {
+        if (!interativo) throw new Error('Os dados mudaram em outro dispositivo. Use Sincronizar para resolver o conflito.');
+        const usarNuvem = confirm('Os dados da nuvem mudaram em outro dispositivo. Deseja substituir os dados locais pelos dados da nuvem? Se escolher Cancelar, você poderá optar por enviar os dados locais.');
+        if (usarNuvem) {
+            aplicarEstado(remoto.state || { lancamentos: [], categorias: categoriasPadrao, metasFinanceiras: [] });
+            await salvarLocalmente();
+            popularMeses();
+            popularCategorias();
+            atualizar();
+            gravarRevisaoSincronizacao(remoto.revision);
+            mensagem('Dados atualizados a partir da nuvem.');
+            return;
+        }
+        if (!confirm('Enviar os dados deste dispositivo substituirá a versão da nuvem para todos. Deseja continuar?')) {
+            throw new Error('Conflito não resolvido. Os dados locais foram mantidos.');
+        }
+        const resultado = await requisicaoSincronizacao('PUT', {
+            state: local,
+            expectedRevision: remoto.revision
+        });
+        gravarRevisaoSincronizacao(resultado.revision);
+        mensagem('Dados locais enviados para a nuvem.');
+        return;
+    }
+
+    if (revisaoSincronizacao === null && remoto.state) {
+        const categoriasPadraoLocais = Object.keys(local.categorias).length === Object.keys(categoriasPadrao).length
+            && Object.entries(categoriasPadrao).every(([nome, valor]) => local.categorias[nome] === valor);
+        const semDadosLocais = !local.lancamentos.length && !local.metasFinanceiras.length && categoriasPadraoLocais;
+        local = semDadosLocais ? remoto.state : mesclarEstados(remoto.state, local);
+        aplicarEstado(local);
+        await salvarLocalmente();
+    } else if (revisaoSincronizacao !== null && remoto.state) {
+        local = estadoAtual();
+    }
+
+    const resultado = await requisicaoSincronizacao('PUT', {
+        state: local,
+        expectedRevision: remoto.revision
+    });
+    gravarRevisaoSincronizacao(resultado.revision);
+    popularMeses();
+    popularCategorias();
+    atualizar();
+    mensagem('Dados sincronizados com a nuvem.');
+}
+
+function gravarRevisaoSincronizacao(revisao) {
+    revisaoSincronizacao = revisao;
+    localStorage.setItem(STORAGE_REVISAO_SYNC, String(revisao));
+}
+
+function abrirSincronizacao() {
+    $('mensagemSincronizacao').textContent = '';
+    $('senhaSincronizacao').value = senhaSincronizacao || '';
+    $('dialogSincronizacao').showModal();
+    $('senhaSincronizacao').focus();
+}
+
+function sincronizarAgora() {
+    if (!senhaSincronizacao) return abrirSincronizacao();
+    sincronizarComServidor(true).catch(erro => mensagem(erro.message, true));
+}
+
+async function conectarSincronizacao(evento) {
+    evento.preventDefault();
+    senhaSincronizacao = $('senhaSincronizacao').value;
+    sessionStorage.setItem(STORAGE_SENHA_SYNC, senhaSincronizacao);
+    $('mensagemSincronizacao').textContent = 'Conectando...';
+    try {
+        await sincronizarComServidor(true);
+        $('dialogSincronizacao').close();
+    } catch (erro) {
+        if (erro.message.includes('Senha de sincronização inválida')) {
+            senhaSincronizacao = null;
+            sessionStorage.removeItem(STORAGE_SENHA_SYNC);
+        }
+        $('mensagemSincronizacao').textContent = erro.message;
+    }
+}
+
+async function inicializar() {
+    banco = await carregar();
+    lancamentos = banco.lancamentos;
+    categorias = banco.categorias;
+    metasFinanceiras = banco.metasFinanceiras || [];
     popularMeses();
     popularCategorias();
     $('lancData').value = hoje();
+    $('lancTipo').addEventListener('change', atualizarCamposPagamento);
+    $('lancFormaPagamento').addEventListener('change', atualizarCamposPagamento);
+    atualizarCamposPagamento();
     if (localStorage.getItem('tema') === 'dark') document.body.classList.add('dark');
     el.mes.addEventListener('change', atualizar);
     el.formulario.addEventListener('submit', salvarLancamento);
@@ -78,15 +244,22 @@ function inicializar() {
     $('tema').addEventListener('click', alternarTema);
     $('cancelarEdicao').addEventListener('click', cancelarEdicao);
     $('gerenciarCategorias').addEventListener('click', abrirCategorias);
+    $('cancelarCategorias').addEventListener('click', () => $('dialogCategorias').close());
     $('formCategorias').addEventListener('submit', salvarCategorias);
     $('importarCsv').addEventListener('change', importarExtrato);
     $('relatorio').addEventListener('click', mostrarRelatorioAnual);
     $('imprimir').addEventListener('click', () => window.print());
     $('desfazer').addEventListener('click', desfazer);
     $('adicionarMeta').addEventListener('click', () => $('dialogMeta').showModal());
+    $('cancelarMeta').addEventListener('click', () => $('dialogMeta').close());
     $('formMeta').addEventListener('submit', salvarMeta);
+    window.addEventListener('resize', () => renderizarGraficos(lancamentosDoMes()));
+    $('sincronizar').addEventListener('click', sincronizarAgora);
+    $('fecharSincronizacao').addEventListener('click', () => $('dialogSincronizacao').close());
+    $('formSincronizacao').addEventListener('submit', conectarSincronizacao);
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(console.error);
     atualizar();
+    if (senhaSincronizacao) sincronizarComServidor().catch(erro => mensagem(erro.message, true));
 }
 
 function popularMeses() {
@@ -147,7 +320,7 @@ function renderizarTabela(itens) {
     });
     el.tabela.replaceChildren();
     if (!itens.length) {
-        el.tabela.innerHTML = '<tr><td colspan="7" class="empty-state">Nenhum lançamento encontrado.</td></tr>';
+        el.tabela.innerHTML = '<tr><td colspan="8" class="empty-state">Nenhum lançamento encontrado.</td></tr>';
         return;
     }
     itens.forEach(item => {
@@ -163,6 +336,9 @@ function renderizarTabela(itens) {
             } else td.textContent = valor;
             linha.append(td);
         });
+        const pagamento = document.createElement('td');
+        pagamento.textContent = descreverPagamento(item);
+        linha.append(pagamento);
         const valor = document.createElement('td');
         valor.textContent = `${item.tipo === 'Receita' ? '+' : '-'} ${formatar(item.valorCentavos)}`;
         valor.className = item.tipo === 'Receita' ? 'positivo' : 'negativo';
@@ -193,26 +369,41 @@ function acaoTabela(evento) {
     else excluirLancamento(botao.dataset.id);
 }
 
-function salvarLancamento(evento) {
+async function salvarLancamento(evento) {
     evento.preventDefault();
     const descricao = $('lancDesc').value.trim();
     const valor = Number($('lancValor').value);
     const data = $('lancData').value;
+    const tipo = $('lancTipo').value;
+    const formaPagamento = tipo === 'Despesa' ? $('lancFormaPagamento').value : '';
+    const origemPagamento = tipo === 'Despesa' ? $('lancOrigemPagamento').value.trim() : '';
+    const ehParcelada = tipo === 'Despesa' && formaPagamento === 'parcelada';
     if (descricao.length < 3) return mensagem('Informe uma descrição com pelo menos 3 caracteres.', true);
     if (!data || !Number.isFinite(valor) || valor <= 0) return mensagem('Informe uma data e um valor válidos.', true);
     const dataNormalizada = normalizarData(data);
     if (!dataNormalizada) return mensagem('Informe uma data válida.', true);
-    const parcelas = Math.max(1, Number($('lancParcelas').value) || 1);
+    const valorCentavos = Math.round(valor * 100);
+    if (!Number.isSafeInteger(valorCentavos) || valorCentavos <= 0) return mensagem('Informe um valor válido.', true);
+    if (tipo === 'Despesa' && !origemPagamento) {
+        return mensagem(ehParcelada ? 'Informe o cartão de crédito.' : 'Informe a conta de onde saiu o dinheiro.', true);
+    }
+    const parcelas = ehParcelada ? Number($('lancParcelas').value) : 1;
+    if (ehParcelada && (!Number.isInteger(parcelas) || parcelas < 2 || parcelas > 120 || valorCentavos < parcelas)) {
+        return mensagem('Informe entre 2 e 120 parcelas e um valor que cubra todas elas.', true);
+    }
     const recorrencia = $('lancRecorrencia').value;
-    if (parcelas > 1 && recorrencia) return mensagem('Parcelamento e recorrência não podem ser usados juntos.', true);
+    if (ehParcelada && recorrencia) return mensagem('Parcelamento e recorrência não podem ser usados juntos.', true);
     const id = $('lancId').value;
+    const lancamentoEditado = id ? lancamentos.find(item => item.id === id) : null;
+    if (id && !lancamentoEditado) return mensagem('Lançamento não encontrado.', true);
     const dados = {
         id: id || novoId(),
-        data: dataNormalizada, descricao, tipo: $('lancTipo').value, categoria: el.categoria.value,
-        quem: $('lancQuem').value, valorCentavos: Math.round(valor * 100),
+        data: dataNormalizada, descricao, tipo, categoria: el.categoria.value,
+        quem: $('lancQuem').value, valorCentavos,
         situacao: $('lancSituacao').value, natureza: $('lancNatureza').value,
-        parcelas, recorrencia, observacao: $('lancObservacao').value.trim(),
-        parcelaAtual: 1
+        formaPagamento, origemPagamento, parcelas, recorrencia, observacao: $('lancObservacao').value.trim(),
+        parcelaAtual: lancamentoEditado?.parcelaAtual || 1,
+        ...(ehParcelada && !id ? { valorCompraCentavos: valorCentavos } : {})
     };
     const estadoAnterior = capturarEstado();
     if (id) lancamentos[lancamentos.findIndex(item => item.id === id)] = dados;
@@ -221,7 +412,7 @@ function salvarLancamento(evento) {
         criarParcelas(dados);
         criarRecorrencia(dados);
     }
-    if (!salvar()) {
+    if (!(await salvar())) {
         restaurarEstado(estadoAnterior);
         return;
     }
@@ -243,6 +434,8 @@ function editarLancamento(id) {
     el.categoria.value = item.categoria;
     $('lancQuem').value = item.quem;
     $('lancValor').value = (item.valorCentavos / 100).toFixed(2);
+    $('lancFormaPagamento').value = item.formaPagamento || (item.parcelas > 1 ? 'parcelada' : 'avista');
+    $('lancOrigemPagamento').value = item.origemPagamento || '';
     $('lancSituacao').value = item.situacao || 'Concluído';
     $('lancNatureza').value = item.natureza || 'Variável';
     $('lancParcelas').value = item.parcelas || 1;
@@ -251,6 +444,7 @@ function editarLancamento(id) {
     $('tituloFormulario').textContent = 'Editar Lançamento';
     $('botaoSalvar').textContent = 'Salvar alterações';
     $('cancelarEdicao').classList.remove('hidden');
+    atualizarCamposPagamento();
     $('lancDesc').focus();
 }
 
@@ -258,17 +452,48 @@ function cancelarEdicao() {
     el.formulario.reset();
     $('lancId').value = '';
     $('lancData').value = hoje();
+    atualizarCamposPagamento();
     $('tituloFormulario').textContent = 'Novo Lançamento';
     $('botaoSalvar').textContent = 'Adicionar Lançamento';
     $('cancelarEdicao').classList.add('hidden');
 }
 
-function excluirLancamento(id) {
+function atualizarCamposPagamento() {
+    const ehDespesa = $('lancTipo').value === 'Despesa';
+    const ehParcelada = ehDespesa && $('lancFormaPagamento').value === 'parcelada';
+    $('grupoPagamento').classList.toggle('hidden', !ehDespesa);
+    $('grupoOrigemPagamento').classList.toggle('hidden', !ehDespesa);
+    $('grupoParcelas').classList.toggle('hidden', !ehParcelada);
+    $('lancOrigemPagamento').required = ehDespesa;
+    $('rotuloOrigemPagamento').textContent = ehParcelada ? 'Cartão de crédito' : 'Conta de origem';
+    $('lancOrigemPagamento').placeholder = ehParcelada ? 'Ex.: Cartão principal' : 'Ex.: Conta corrente';
+    $('ajudaValor').textContent = ehParcelada
+        ? $('lancId').value ? 'Informe o valor desta parcela.' : 'Informe o valor total da compra; ele será dividido entre as parcelas.'
+        : '';
+    $('lancParcelas').required = ehParcelada;
+
+    const origens = [...new Set(lancamentos.map(item => item.origemPagamento).filter(Boolean))].sort();
+    $('opcoesOrigemPagamento').replaceChildren(...origens.map(origem => {
+        const opcao = document.createElement('option');
+        opcao.value = origem;
+        return opcao;
+    }));
+}
+
+function descreverPagamento(item) {
+    if (item.tipo !== 'Despesa' || !item.origemPagamento) return '—';
+    const origem = item.formaPagamento === 'parcelada'
+        ? `Cartão: ${item.origemPagamento}`
+        : `À vista: ${item.origemPagamento}`;
+    return item.parcelas > 1 ? `${origem} (${item.parcelaAtual || 1}/${item.parcelas})` : origem;
+}
+
+async function excluirLancamento(id) {
     const item = lancamentos.find(lancamento => lancamento.id === id);
     if (item && confirm(`Apagar "${item.descricao}"?`)) {
         const estadoAnterior = capturarEstado();
         lancamentos = lancamentos.filter(lancamento => lancamento.id !== id);
-        if (!salvar()) {
+        if (!(await salvar())) {
             restaurarEstado(estadoAnterior);
             return;
         }
@@ -277,11 +502,11 @@ function excluirLancamento(id) {
     }
 }
 
-function limparTudo() {
+async function limparTudo() {
     if (lancamentos.length && confirm('Apagar todos os lançamentos registrados?')) {
         const estadoAnterior = capturarEstado();
         lancamentos = [];
-        if (!salvar()) {
+        if (!(await salvar())) {
             restaurarEstado(estadoAnterior);
             return;
         }
@@ -290,12 +515,12 @@ function limparTudo() {
     }
 }
 
-function limparMes() {
+async function limparMes() {
     const itens = lancamentosDoMes();
     if (itens.length && confirm(`Apagar todos os lançamentos de ${nomeMes(el.mes.value)}?`)) {
         const estadoAnterior = capturarEstado();
         lancamentos = lancamentos.filter(item => !item.data.startsWith(el.mes.value));
-        if (!salvar()) {
+        if (!(await salvar())) {
             restaurarEstado(estadoAnterior);
             return;
         }
@@ -355,10 +580,7 @@ function renderizarGraficos(itens) {
 
 function desenharGraficoCategorias(itens) {
     const canvas = $('graficoCategorias');
-    const ctx = canvas.getContext('2d');
-    canvas.width = canvas.clientWidth * window.devicePixelRatio;
-    canvas.height = 220 * window.devicePixelRatio;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const { ctx, largura } = prepararCanvas(canvas);
     const dados = Object.keys(categorias).map(nome => ({
         nome,
         valor: total(itens.filter(item => item.tipo === 'Despesa' && item.categoria === nome), 'Despesa')
@@ -374,7 +596,7 @@ function desenharGraficoCategorias(itens) {
         ctx.font = `${12 * window.devicePixelRatio}px sans-serif`;
         ctx.fillText(item.nome, 10, y);
         ctx.fillStyle = '#818cf8';
-        ctx.fillRect(110, y - 12, (canvas.width - 130) * item.valor / maximo, 18);
+        ctx.fillRect(110, y - 12, Math.max(0, largura - 130) * item.valor / maximo, 18);
         ctx.fillStyle = '#1f2937';
         ctx.fillText(formatar(item.valor), 115, y + 2);
     });
@@ -382,10 +604,7 @@ function desenharGraficoCategorias(itens) {
 
 function desenharEvolucao() {
     const canvas = $('graficoEvolucao');
-    const ctx = canvas.getContext('2d');
-    canvas.width = canvas.clientWidth * window.devicePixelRatio;
-    canvas.height = 220 * window.devicePixelRatio;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const { ctx, largura, altura } = prepararCanvas(canvas);
     const meses = [...new Set(lancamentos.map(item => item.data.slice(0, 7)))].sort().slice(-6);
     if (!meses.length) return;
     let acumulado = 0;
@@ -396,22 +615,37 @@ function desenharEvolucao() {
     });
     const maximo = Math.max(...valores.map(Math.abs), 1);
     ctx.strokeStyle = '#4f46e5';
-    ctx.lineWidth = 3 * window.devicePixelRatio;
+    ctx.lineWidth = 3;
     ctx.beginPath();
     valores.forEach((valor, indice) => {
-        const x = 30 + indice * (canvas.width - 60) / Math.max(valores.length - 1, 1);
-        const y = canvas.height / 2 - (valor / maximo) * (canvas.height / 2 - 30);
+        const x = 30 + indice * (largura - 60) / Math.max(valores.length - 1, 1);
+        const y = altura / 2 - (valor / maximo) * (altura / 2 - 30);
         indice ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    });
+    ctx.stroke();
+    valores.forEach((valor, indice) => {
+        const x = 30 + indice * (largura - 60) / Math.max(valores.length - 1, 1);
+        const y = altura / 2 - (valor / maximo) * (altura / 2 - 30);
         ctx.fillStyle = '#4f46e5';
         ctx.beginPath();
         ctx.arc(x, y, 4, 0, Math.PI * 2);
         ctx.fill();
-        ctx.beginPath();
     });
-    ctx.stroke();
     $('descricaoGraficoEvolucao').textContent = meses.map((mes, indice) =>
         `${nomeMes(mes)}: ${formatar(valores[indice])}`
     ).join('; ');
+}
+
+function prepararCanvas(canvas) {
+    const escala = window.devicePixelRatio || 1;
+    const largura = canvas.clientWidth;
+    const altura = 220;
+    canvas.width = Math.round(largura * escala);
+    canvas.height = Math.round(altura * escala);
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(escala, 0, 0, escala, 0, 0);
+    ctx.clearRect(0, 0, largura, altura);
+    return { ctx, largura, altura };
 }
 
 function abrirCategorias() {
@@ -419,7 +653,7 @@ function abrirCategorias() {
     $('dialogCategorias').showModal();
 }
 
-function salvarCategorias(evento) {
+async function salvarCategorias(evento) {
     evento.preventDefault();
     const novas = {};
     for (const linha of $('categoriasTexto').value.split('\n')) {
@@ -430,12 +664,14 @@ function salvarCategorias(evento) {
         }
         const meta = Number(String(valor || 0).replace(',', '.'));
         if (!Number.isFinite(meta) || meta < 0) return mensagem('Meta inválida. Use números iguais ou maiores que zero.', true);
-        novas[nome] = Math.round(meta * 100);
+        const metaCentavos = Math.round(meta * 100);
+        if (!Number.isSafeInteger(metaCentavos)) return mensagem('Meta acima do limite permitido.', true);
+        novas[nome] = metaCentavos;
     }
     if (!Object.keys(novas).length) return mensagem('Informe pelo menos uma categoria.', true);
     const estadoAnterior = capturarEstado();
     categorias = novas;
-    if (!salvar()) {
+    if (!(await salvar())) {
         restaurarEstado(estadoAnterior);
         return;
     }
@@ -454,7 +690,7 @@ function importarJson(evento) {
     const arquivo = evento.target.files[0];
     if (!arquivo) return;
     const leitor = new FileReader();
-    leitor.onload = () => {
+    leitor.onload = async () => {
         try {
             const dados = JSON.parse(leitor.result);
             if (!validarBackup(dados)) throw new Error();
@@ -463,7 +699,7 @@ function importarJson(evento) {
             lancamentos = dados.lancamentos;
             categorias = dados.categorias;
             metasFinanceiras = dados.metasFinanceiras || [];
-            if (!salvar()) {
+            if (!(await salvar())) {
                 restaurarEstado(estadoAnterior);
                 return;
             }
@@ -478,8 +714,17 @@ function importarJson(evento) {
 }
 
 function exportarCsv() {
-    const linhas = [['Data', 'Descrição', 'Tipo', 'Categoria', 'Quem', 'Valor'], ...lancamentosDoMes().map(item =>
-        [item.data, item.descricao, item.tipo, item.categoria, item.quem, (item.valorCentavos / 100).toFixed(2)]
+    const linhas = [[
+        'Data', 'Descrição', 'Tipo', 'Categoria', 'Quem', 'Valor',
+        'Forma de pagamento', 'Origem de pagamento', 'Parcela'
+    ], ...lancamentosDoMes().map(item =>
+        [
+            item.data, item.descricao, item.tipo, item.categoria, item.quem,
+            (item.valorCentavos / 100).toFixed(2),
+            item.formaPagamento === 'parcelada' ? 'Parcelada' : item.formaPagamento === 'avista' ? 'À vista' : '',
+            item.origemPagamento || '',
+            item.parcelas > 1 ? `${item.parcelaAtual || 1}/${item.parcelas}` : ''
+        ]
     )];
     baixar(linhas.map(linha => linha.map(csv).join(',')).join('\n'), 'lancamentos.csv', 'text/csv;charset=utf-8');
 }
@@ -526,7 +771,14 @@ function validarLancamento(item) {
         && ['Receita', 'Despesa'].includes(item.tipo)
         && typeof item.categoria === 'string'
         && typeof item.quem === 'string'
-        && Number.isInteger(item.valorCentavos) && item.valorCentavos > 0
+        && Number.isSafeInteger(item.valorCentavos) && item.valorCentavos > 0
+        && (item.formaPagamento === undefined || item.formaPagamento === '' || ['avista', 'parcelada'].includes(item.formaPagamento))
+        && (item.origemPagamento === undefined || typeof item.origemPagamento === 'string' && item.origemPagamento.length <= 60)
+        && (item.parcelas === undefined || Number.isSafeInteger(item.parcelas) && item.parcelas >= 1 && item.parcelas <= 120)
+        && (item.parcelaAtual === undefined || Number.isSafeInteger(item.parcelaAtual) && item.parcelaAtual >= 1)
+        && (item.parcelas === undefined || item.parcelaAtual === undefined || item.parcelaAtual <= item.parcelas)
+        && (item.tipo !== 'Despesa' || !['avista', 'parcelada'].includes(item.formaPagamento)
+            || typeof item.origemPagamento === 'string' && item.origemPagamento.trim().length > 0)
         && Boolean(normalizarData(item.data));
 }
 
@@ -534,13 +786,13 @@ function validarBackup(dados, exigirMetas = true) {
     if (!dados || typeof dados !== 'object' || !Array.isArray(dados.lancamentos)
         || !dados.categorias || Array.isArray(dados.categorias) || typeof dados.categorias !== 'object') return false;
     if (Object.keys(dados.categorias).some(nome => ['__proto__', 'prototype', 'constructor'].includes(nome))) return false;
-    if (!Object.values(dados.categorias).every(valor => Number.isInteger(valor) && valor >= 0)) return false;
+    if (!Object.values(dados.categorias).every(valor => Number.isSafeInteger(valor) && valor >= 0)) return false;
     if (!dados.lancamentos.every(validarLancamento)) return false;
     if (exigirMetas && dados.metasFinanceiras !== undefined && !Array.isArray(dados.metasFinanceiras)) return false;
     return !exigirMetas || dados.metasFinanceiras === undefined || dados.metasFinanceiras.every(meta =>
         meta && typeof meta.id === 'string' && typeof meta.nome === 'string'
-        && Number.isInteger(meta.alvo) && meta.alvo >= 0 && typeof meta.prazo === 'string'
-        && meta.nome.trim().length > 0 && /^\d{4}-\d{2}$/.test(meta.prazo)
+        && Number.isSafeInteger(meta.alvo) && meta.alvo >= 0 && typeof meta.prazo === 'string'
+        && meta.nome.trim().length > 0 && /^\d{4}-(0[1-9]|1[0-2])$/.test(meta.prazo)
     );
 }
 
@@ -548,8 +800,9 @@ function formatar(centavos) { return moeda.format(centavos / 100); }
 function formatarData(data) { const [ano, mes, dia] = data.split('-'); return `${dia}/${mes}/${ano}`; }
 function nomeMes(mes) { const [ano, numero] = mes.split('-').map(Number); return new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric' }).format(new Date(ano, numero - 1, 1)); }
 function mensagem(texto, erro = false) {
-    el.mensagem.textContent = texto;
-    el.mensagem.classList.toggle('erro', erro);
+    el.mensagem.textContent = `${texto}${erroSincronizacao}`;
+    el.mensagem.classList.toggle('erro', erro || Boolean(erroSincronizacao));
+    erroSincronizacao = '';
     clearTimeout(mensagem.timer);
     mensagem.timer = setTimeout(() => el.mensagem.textContent = '', 5000);
 }
@@ -557,14 +810,21 @@ function mensagem(texto, erro = false) {
 function criarParcelas(original) {
     const totalParcelas = original.parcelas || 1;
     if (totalParcelas <= 1) return;
-    const valorOriginal = original.valorCentavos;
-    lancamentos.pop();
-    lancamentos.push({ ...original, descricao: `${original.descricao} (1/${totalParcelas})`, parcelaAtual: 1 });
+    const valorParcela = Math.floor(original.valorCentavos / totalParcelas);
+    const centavosRestantes = original.valorCentavos % totalParcelas;
+    const primeiraParcela = {
+        ...original,
+        valorCentavos: valorParcela + (centavosRestantes > 0 ? 1 : 0),
+        descricao: `${original.descricao} (1/${totalParcelas})`,
+        parcelaAtual: 1
+    };
+    lancamentos[lancamentos.findIndex(item => item.id === original.id)] = primeiraParcela;
     for (let parcela = 2; parcela <= totalParcelas; parcela++) {
         const data = somarMeses(original.data, parcela - 1);
         lancamentos.push({
             ...original, id: novoId(), data, descricao: `${original.descricao} (${parcela}/${totalParcelas})`,
-            parcelaAtual: parcela, valorCentavos: valorOriginal
+            parcelaAtual: parcela,
+            valorCentavos: valorParcela + (parcela <= centavosRestantes ? 1 : 0)
         });
     }
 }
@@ -604,7 +864,7 @@ function registrarMudanca(estadoAnterior) {
     if (historico.length > 20) historico.shift();
 }
 
-function desfazer() {
+async function desfazer() {
     if (!historico.length) return mensagem('Não há alterações para desfazer.', true);
     const estadoDesfeito = historico.pop();
     const estadoAtual = capturarEstado();
@@ -612,7 +872,7 @@ function desfazer() {
     lancamentos = estado.lancamentos;
     categorias = estado.categorias;
     metasFinanceiras = estado.metasFinanceiras;
-    if (!salvar()) {
+    if (!(await salvar())) {
         restaurarEstado(estadoAtual);
         historico.push(estadoDesfeito);
         return;
@@ -680,17 +940,19 @@ function renderizarResumoAnual() {
     }
 }
 
-function salvarMeta(evento) {
+async function salvarMeta(evento) {
     evento.preventDefault();
     const nome = $('metaNome').value.trim();
     const valor = Number($('metaValor').value);
     if (!nome || !Number.isFinite(valor) || valor <= 0) return mensagem('Informe um nome e um valor alvo válidos.', true);
+    const alvo = Math.round(valor * 100);
+    if (!Number.isSafeInteger(alvo)) return mensagem('O valor alvo excede o limite permitido.', true);
     const estadoAnterior = capturarEstado();
     metasFinanceiras.push({
         id: novoId(), nome,
-        alvo: Math.round(valor * 100), prazo: $('metaPrazo').value
+        alvo, prazo: $('metaPrazo').value
     });
-    if (!salvar()) {
+    if (!(await salvar())) {
         restaurarEstado(estadoAnterior);
         return;
     }
@@ -735,7 +997,7 @@ function importarExtrato(evento) {
     const arquivo = evento.target.files[0];
     if (!arquivo) return;
     const leitor = new FileReader();
-    leitor.onload = () => {
+    leitor.onload = async () => {
         const texto = leitor.result;
         const novos = arquivo.name.toLowerCase().endsWith('.ofx')
             ? importarOfx(texto)
@@ -749,7 +1011,7 @@ function importarExtrato(evento) {
             }
         });
         lancamentos.push(...novos);
-        if (!salvar()) {
+        if (!(await salvar())) {
             restaurarEstado(estadoAnterior);
             return;
         }
@@ -768,7 +1030,9 @@ function importarCsvTexto(texto) {
     const indice = nome => cabecalho.findIndex(valor => valor.toLowerCase() === nome.toLowerCase());
     const campos = {
         data: indice('Data'), descricao: indice('Descrição'), tipo: indice('Tipo'),
-        categoria: indice('Categoria'), quem: indice('Quem'), valor: indice('Valor')
+        categoria: indice('Categoria'), quem: indice('Quem'), valor: indice('Valor'),
+        formaPagamento: indice('Forma de pagamento'), origemPagamento: indice('Origem de pagamento'),
+        parcela: indice('Parcela')
     };
     if (campos.data < 0 || campos.descricao < 0 || campos.valor < 0) {
         campos.data = 0; campos.descricao = 1; campos.tipo = 2;
@@ -783,13 +1047,27 @@ function importarCsvTexto(texto) {
             ? valor.replace(/\./g, '').replace(',', '.')
             : valor.replace(',', '.'));
         const valorCentavos = Math.round(valorNumerico * 100);
-        if (!Number.isFinite(valorNumerico) || valorCentavos <= 0) return null;
+        if (!Number.isFinite(valorNumerico) || !Number.isSafeInteger(valorCentavos) || valorCentavos <= 0) return null;
+        const formaTexto = partes[campos.formaPagamento]?.trim().toLowerCase();
+        let formaPagamento = formaTexto === 'parcelada' ? 'parcelada'
+            : formaTexto === 'à vista' || formaTexto === 'a vista' ? 'avista' : '';
+        const parcelaTexto = partes[campos.parcela]?.trim().match(/^(\d+)\/(\d+)$/);
+        const parcelaAtual = parcelaTexto ? Number(parcelaTexto[1]) : 1;
+        const parcelas = parcelaTexto ? Number(parcelaTexto[2]) : 1;
+        if (parcelas < 1 || parcelas > 120 || parcelaAtual < 1 || parcelaAtual > parcelas) return null;
+        if (parcelas > 1 && !formaPagamento) formaPagamento = 'parcelada';
+        const tipo = ['Receita', 'Despesa'].includes(partes[campos.tipo]?.trim())
+            ? partes[campos.tipo].trim() : 'Despesa';
+        const origemPagamento = partes[campos.origemPagamento]?.trim() || '';
         return {
             id: novoId(), data, descricao,
-            tipo: ['Receita', 'Despesa'].includes(partes[campos.tipo]?.trim()) ? partes[campos.tipo].trim() : 'Despesa',
+            tipo,
             categoria: partes[campos.categoria]?.trim() || 'Outros',
             quem: partes[campos.quem]?.trim() || 'Juntos',
-            valorCentavos: Math.abs(valorCentavos), situacao: 'Concluído', natureza: 'Variável'
+            valorCentavos: Math.abs(valorCentavos), situacao: 'Concluído', natureza: 'Variável',
+            formaPagamento: tipo === 'Despesa' && origemPagamento ? formaPagamento : '',
+            origemPagamento: tipo === 'Despesa' ? origemPagamento : '',
+            parcelas, parcelaAtual
         };
     }).filter(Boolean);
 }
@@ -824,11 +1102,14 @@ function importarOfx(texto) {
         const nome = bloco.match(/<MEMO>([^<]+)/i)?.[1].trim();
         const dataTexto = bloco.match(/<DTPOSTED>(\d{4})(\d{2})(\d{2})/i);
         if (!valorTexto || !dataTexto) continue;
-        const valorCentavos = Math.round(Math.abs(Number(valorTexto)) * 100);
+        const valor = Number(valorTexto);
+        const valorCentavos = Math.round(Math.abs(valor) * 100);
+        const data = normalizarData(`${dataTexto[1]}-${dataTexto[2]}-${dataTexto[3]}`);
+        if (!data || !Number.isFinite(valor) || !Number.isSafeInteger(valorCentavos) || valorCentavos <= 0) continue;
         transacoes.push({
-            id: novoId(), data: `${dataTexto[1]}-${dataTexto[2]}-${dataTexto[3]}`,
-            descricao: nome || 'Importação bancária', tipo: Number(valorTexto) >= 0 ? 'Receita' : 'Despesa',
-            categoria: Number(valorTexto) >= 0 ? 'Outros' : 'Mercado', quem: 'Juntos',
+            id: novoId(), data,
+            descricao: nome || 'Importação bancária', tipo: valor >= 0 ? 'Receita' : 'Despesa',
+            categoria: valor >= 0 ? 'Outros' : 'Mercado', quem: 'Juntos',
             valorCentavos, situacao: 'Concluído', natureza: 'Variável'
         });
     }

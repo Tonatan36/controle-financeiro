@@ -1,6 +1,6 @@
-const CACHE = 'controle-financeiro-v3';
-const ARQUIVOS = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest', './icon.svg'];
-const ESTATICOS = new Set(['styles.css', 'app.js', 'manifest.webmanifest', 'icon.svg']);
+const CACHE = 'controle-financeiro-v7';
+const ARQUIVOS = ['./', './index.html', './styles.css', './indexeddb.js', './app.js', './manifest.webmanifest', './icon.svg'];
+const ESTATICOS = new Set(['styles.css', 'indexeddb.js', 'app.js', 'manifest.webmanifest', 'icon.svg']);
 
 self.addEventListener('install', evento => {
     evento.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ARQUIVOS)));
