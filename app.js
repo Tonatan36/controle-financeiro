@@ -1,5 +1,6 @@
 const STORAGE = 'controleFinanceiroCasal-v2';
 const STORAGE_REVISAO_SYNC = 'controleFinanceiroSyncRevision-v1';
+const STORAGE_HASH_SYNC = 'controleFinanceiroSyncHash-v1';
 const STORAGE_SENHA_SYNC = 'controleFinanceiroSyncPassword-v1';
 const categoriasPadrao = {
     Mercado: 90000,
@@ -94,6 +95,12 @@ async function salvarLocalmente() {
     await window.financeiroDB.salvar(estadoAtual());
 }
 
+async function calcularHashEstado(estado) {
+    const dados = new TextEncoder().encode(JSON.stringify(estado));
+    const hash = await crypto.subtle.digest('SHA-256', dados);
+    return [...new Uint8Array(hash)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
 function mesclarEstados(remoto, local) {
     const mesclarPorId = (primeiro, segundo) => {
         const itens = new Map(primeiro.map(item => [item.id, item]));
@@ -139,26 +146,43 @@ async function executarSincronizacao(interativo) {
     let remoto = await requisicaoSincronizacao('GET');
     let local = estadoAtual();
     if (revisaoSincronizacao !== null && remoto.revision !== revisaoSincronizacao) {
-        if (!interativo) throw new Error('Os dados mudaram em outro dispositivo. Use Sincronizar para resolver o conflito.');
+        if (!interativo) {
+            const hashSincronizado = localStorage.getItem(STORAGE_HASH_SYNC);
+            if (remoto.state && hashSincronizado && await calcularHashEstado(local) === hashSincronizado) {
+                const hashRemoto = await calcularHashEstado(remoto.state);
+                aplicarEstado(remoto.state);
+                await salvarLocalmente();
+                gravarRevisaoSincronizacao(remoto.revision, hashRemoto);
+                popularMeses();
+                popularCategorias();
+                atualizar();
+                mensagem('Dados atualizados automaticamente a partir da nuvem.');
+                return;
+            }
+            throw new Error('Os dados mudaram em outro dispositivo. Use Sincronizar para resolver o conflito.');
+        }
         const usarNuvem = confirm('Os dados da nuvem mudaram em outro dispositivo. Deseja substituir os dados locais pelos dados da nuvem? Se escolher Cancelar, você poderá optar por enviar os dados locais.');
         if (usarNuvem) {
-            aplicarEstado(remoto.state || { lancamentos: [], categorias: categoriasPadrao, metasFinanceiras: [] });
+            const estadoRemoto = remoto.state || { lancamentos: [], categorias: categoriasPadrao, metasFinanceiras: [] };
+            const hashRemoto = await calcularHashEstado(estadoRemoto);
+            aplicarEstado(estadoRemoto);
             await salvarLocalmente();
             popularMeses();
             popularCategorias();
             atualizar();
-            gravarRevisaoSincronizacao(remoto.revision);
+            gravarRevisaoSincronizacao(remoto.revision, hashRemoto);
             mensagem('Dados atualizados a partir da nuvem.');
             return;
         }
         if (!confirm('Enviar os dados deste dispositivo substituirá a versão da nuvem para todos. Deseja continuar?')) {
             throw new Error('Conflito não resolvido. Os dados locais foram mantidos.');
         }
+        const hashLocal = await calcularHashEstado(local);
         const resultado = await requisicaoSincronizacao('PUT', {
             state: local,
             expectedRevision: remoto.revision
         });
-        gravarRevisaoSincronizacao(resultado.revision);
+        gravarRevisaoSincronizacao(resultado.revision, hashLocal);
         mensagem('Dados locais enviados para a nuvem.');
         return;
     }
@@ -174,18 +198,20 @@ async function executarSincronizacao(interativo) {
         local = estadoAtual();
     }
 
+    const hashLocal = await calcularHashEstado(local);
     const resultado = await requisicaoSincronizacao('PUT', {
         state: local,
         expectedRevision: remoto.revision
     });
-    gravarRevisaoSincronizacao(resultado.revision);
+    gravarRevisaoSincronizacao(resultado.revision, hashLocal);
     popularMeses();
     popularCategorias();
     atualizar();
     mensagem('Dados sincronizados com a nuvem.');
 }
 
-function gravarRevisaoSincronizacao(revisao) {
+function gravarRevisaoSincronizacao(revisao, hashEstado) {
+    localStorage.setItem(STORAGE_HASH_SYNC, hashEstado);
     revisaoSincronizacao = revisao;
     localStorage.setItem(STORAGE_REVISAO_SYNC, String(revisao));
 }

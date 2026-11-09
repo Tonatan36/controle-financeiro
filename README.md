@@ -50,7 +50,7 @@ Os registros são armazenados no IndexedDB do navegador. Na primeira abertura, o
 4. Faça um novo deploy depois de salvar as variáveis.
 5. Abra o endereço do Vercel e clique em **Sincronizar** em cada dispositivo. Digite a mesma `SYNC_PASSWORD`.
 
-A tabela de sincronização é criada automaticamente na primeira chamada à API. Na primeira conexão, lançamentos e metas são combinados por ID; depois disso, alterações de outro dispositivo são detectadas pela revisão do banco para evitar sobrescrever dados silenciosamente. As alterações são enviadas quando você salva; para receber alterações feitas no outro dispositivo, clique em **Sincronizar** nele. Se houver conflito, o app permite carregar a versão da nuvem ou, após confirmação, enviar a versão local. Faça backup antes de substituir dados.
+A tabela de sincronização é criada automaticamente na primeira chamada à API. Na primeira conexão, lançamentos e metas são combinados por ID; depois disso, alterações de outro dispositivo são detectadas pela revisão do banco para evitar sobrescrever dados silenciosamente. Com a sincronização conectada, os dados são enviados ao salvar e atualizados automaticamente ao abrir o app se não houver alterações locais pendentes. Também é possível clicar em **Sincronizar** para buscar as alterações manualmente. Se houver conflito com alterações locais pendentes, o app permite carregar a versão da nuvem ou, após confirmação, enviar a versão local. Faça backup antes de substituir dados.
 
 O app continua salvando no dispositivo quando está offline, mas essas alterações não chegam à nuvem até haver conexão. GitHub Pages ou um servidor estático local não executam a API; a sincronização exige o deploy no Vercel com as três variáveis configuradas.
 

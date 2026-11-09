@@ -1,4 +1,4 @@
-const CACHE = 'controle-financeiro-v7';
+const CACHE = 'controle-financeiro-v8';
 const ARQUIVOS = ['./', './index.html', './styles.css', './indexeddb.js', './app.js', './manifest.webmanifest', './icon.svg'];
 const ESTATICOS = new Set(['styles.css', 'indexeddb.js', 'app.js', 'manifest.webmanifest', 'icon.svg']);
 
